@@ -1,39 +1,46 @@
-'''
-# pip install langgraph langchain langchain-openai langchain-groq langchain-community langchain-tavily psycopg[binary] psycopg_pool python-dotenv tavily-python pip install requests streamlit
-
-# install PostgresSql and create database
-CREATE DATABASE langgraph_memory;  ( or open pgadmin4 and create database there )
-'''
-# LangGraph Multi-Agent Travel Booking System with Long-Term Memory
-
-# main.py
 
 import os
-from typing import TypedDict, Annotated
 import operator
+from typing import TypedDict, Annotated
 
 import psycopg
+from psycopg.rows import dict_row
+from dotenv import load_dotenv
+
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.postgres import PostgresSaver
+
 from langchain_core.messages import (
     AnyMessage,
     HumanMessage,
     AIMessage,
     SystemMessage,
 )
-
 from langchain_groq import ChatGroq
 
 from tools.tavily_tool import tavily_search
 from tools.flight_tool import search_flights
-from dotenv import load_dotenv
+
+
+# Load environment variables
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+if not DATABASE_URL:
+    raise ValueError(
+        "DATABASE_URL is missing. Please check your .env file."
+    )
+
+
 # LLM
+
+
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile"
+    model="openai/gpt-oss-20b",
+    temperature=0.6,
+    reasoning_effort="medium",
+    max_tokens=2048
 )
 
 # State
@@ -45,17 +52,20 @@ class TravelState(TypedDict):
     itinerary: str
     llm_calls: int
 
+
 # Flight Agent
 def flight_agent(state: TravelState):
     query = state["user_query"]
     flight_data = search_flights(query)
+
     return {
         "flight_results": flight_data,
         "messages": [
-            AIMessage(content=f"Flight results fetched")
+            AIMessage(content="Flight results fetched")
         ],
-        "llm_calls": state.get("llm_calls", 0) + 1
+        "llm_calls": state.get("llm_calls", 0) + 1,
     }
+
 
 # Hotel Agent
 def hotel_agent(state: TravelState):
@@ -67,52 +77,53 @@ def hotel_agent(state: TravelState):
         "messages": [
             AIMessage(content="Hotel information fetched")
         ],
-        "llm_calls": state.get("llm_calls", 0) + 1
+        "llm_calls": state.get("llm_calls", 0) + 1,
     }
+
 
 # Itinerary Agent
 def itinerary_agent(state: TravelState):
-
     prompt = f"""
-    Create a travel itinerary.
-    User Query:
-    {state['user_query']}
+Create a travel itinerary.
 
-    Flight Results:
-    {state['flight_results']}
+User Query:
+{state['user_query']}
 
-    Hotel Results:
-    {state['hotel_results']}
-    """
+Flight Results:
+{state['flight_results']}
+
+Hotel Results:
+{state['hotel_results']}
+"""
 
     response = llm.invoke([
         SystemMessage(
-            content="You are an expert travel planner"
+            content="You are an expert travel planner."
         ),
-        HumanMessage(content=prompt)
+        HumanMessage(content=prompt),
     ])
 
     return {
         "itinerary": response.content,
         "messages": [response],
-        "llm_calls": state.get("llm_calls", 0) + 1
+        "llm_calls": state.get("llm_calls", 0) + 1,
     }
+
 
 # Final Response Agent
 def final_agent(state: TravelState):
-
     final_prompt = f"""
-    Generate final travel response.
+Generate the final travel response.
 
-    Flights:
-    {state['flight_results']}
+Flights:
+{state['flight_results']}
 
-    Hotels:
-    {state['hotel_results']}
+Hotels:
+{state['hotel_results']}
 
-    Itinerary:
-    {state['itinerary']}
-    """
+Itinerary:
+{state['itinerary']}
+"""
 
     response = llm.invoke([
         HumanMessage(content=final_prompt)
@@ -120,10 +131,11 @@ def final_agent(state: TravelState):
 
     return {
         "messages": [response],
-        "llm_calls": state.get("llm_calls", 0) + 1
+        "llm_calls": state.get("llm_calls", 0) + 1,
     }
 
 
+# Build Graph
 graph = StateGraph(TravelState)
 
 graph.add_node("flight_agent", flight_agent)
@@ -138,18 +150,24 @@ graph.add_edge("itinerary_agent", "final_agent")
 graph.add_edge("final_agent", END)
 
 
-# Persistent connection so both CLI and Streamlit can share the compiled app
-_conn = psycopg.connect(DATABASE_URL)
+# Persistent PostgreSQL Connection
+_conn = psycopg.connect(
+    DATABASE_URL,
+    autocommit=True,
+    row_factory=dict_row,
+)
+
 checkpointer = PostgresSaver(_conn)
 checkpointer.setup()
 
 app = graph.compile(checkpointer=checkpointer)
 
 
+# Run from the terminal
 if __name__ == "__main__":
     config = {
         "configurable": {
-            "thread_id": "user_aarohi"
+            "thread_id": "user_raj"
         }
     }
 
@@ -164,12 +182,11 @@ if __name__ == "__main__":
             "flight_results": "",
             "hotel_results": "",
             "itinerary": "",
-            "llm_calls": 0
+            "llm_calls": 0,
         },
-        config=config
+        config=config,
     )
 
     print("\nFINAL RESPONSE:\n")
 
-    for msg in result["messages"]:
-        print(msg.content)
+    print(result["messages"][-1].content)
