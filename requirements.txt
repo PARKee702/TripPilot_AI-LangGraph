@@ -1,8 +1,0 @@
-
-streamlit
-langgraph
-langgraph-checkpoint-postgres
-langchain-core
-langchain-groq
-psycopg[binary]
-python-dotenv
